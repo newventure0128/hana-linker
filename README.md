@@ -8,9 +8,7 @@
 
 - **프로젝트명**: Linker - End-to-End AI 상담 에이전트
 - **목표**: 상담 맥락 단절을 해결하는 심리스한 AI 상담 서비스 구축
-- **기간**: 2025년 10월 - 2025년 12월
-- **팀명**: Linker (삼정 Future Academy 06기)
-
+- **기간**: 2026년 4월 ~ 7월
 ---
 
 ## 🏗️ 시스템 아키텍처
@@ -220,35 +218,6 @@ docker-compose up -d
 - [트러블슈팅](docs/troubleshooting/)
 - [분석 보고서](docs/analysis/)
 - [대시보드 문서](docs/dashboard/)
-
----
-
-## 👥 팀 구성
-
-### 조직 구조
-
-| 이름 | 역할 |
-|------|------|
-| 황도경 | PM, BE |
-| 송유선 | BE |
-| 윤희상 | BE |
-| 김두훈 | AI, FE |
-
-| 약어 | 의미 |
-|------|------|
-| PM | Project Manager |
-| BE | Backend |
-| FE | Frontend |
-| AI | AI/ML 모델 개발 |
-
-### 담당 업무
-
-| 담당 | 구분 | 주요 업무 |
-|:------:|------|----------|
-| 황도경 | AI 워크플로우 | LangGraph 기반 워크플로우 설계 및 구현 |
-| 송유선 | 백엔드 | WebSocket, React, RAG 검색 구현 |
-| 윤희상 | 음성 처리 | STT, TTS, VAD 구현 |
-| 김두훈 | AI/FE | 의도 분류 모델링, 프론트엔드, Barge-in, E2E 평가 파이프라인 |
 
 ---
 
