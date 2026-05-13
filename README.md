@@ -229,4 +229,3 @@ docker-compose up -d
 
 ## 📝 라이선스
 
-이 프로젝트는 삼정 Future Academy 06기 최종 프로젝트로 개발되었습니다.
