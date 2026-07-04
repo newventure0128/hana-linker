@@ -415,31 +415,16 @@ async def _extract_slot_info_from_conversation(
         추출된 슬롯 정보 딕셔너리
     """
     from ai_engine.graph.utils.slot_loader import get_slot_loader
-    from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, SystemMessage
-    from app.core.config import settings
+    from app.core.llm import get_chat_llm
 
     logger.info(f"[슬롯 추출] 시작 - 세션: {session_id}, 대화 수: {len(conversation_history)}, context_intent: {context_intent}")
 
     try:
         slot_loader = get_slot_loader()
 
-        # LLM 설정
-        if settings.use_lm_studio:
-            llm = ChatOpenAI(
-                model=settings.lm_studio_model,
-                temperature=0.2,
-                base_url=settings.lm_studio_base_url,
-                api_key="lm-studio",
-                timeout=settings.llm_timeout
-            )
-        else:
-            llm = ChatOpenAI(
-                model="gpt-4o-mini",
-                temperature=0.2,
-                api_key=settings.openai_api_key,
-                timeout=60
-            )
+        # LLM 팩토리로 생성 (provider는 config의 llm_provider 로 결정)
+        llm = get_chat_llm(temperature=0.2)
 
         # 대화 히스토리 포맷팅 (고객 메시지만)
         user_messages = [

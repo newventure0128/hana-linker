@@ -4,41 +4,17 @@
 
 from __future__ import annotations
 import logging
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ai_engine.graph.state import GraphState
 from app.schemas.chat import SourceDocument
-from app.core.config import settings
+from app.core.llm import get_chat_llm, provider_label
 from app.schemas.common import TriageDecisionType
 
 logger = logging.getLogger(__name__)
 
-# LM Studio 또는 OpenAI 사용
-if settings.use_lm_studio:
-    llm = ChatOpenAI(
-        model=settings.lm_studio_model,
-        temperature=0.2,
-        base_url=settings.lm_studio_base_url,
-        api_key="lm-studio",  # LM Studio는 API 키가 필요 없지만 호환성을 위해 더미 값 사용
-        timeout=settings.llm_timeout  # 타임아웃 설정 (초)
-    )
-    logger.info(f"LM Studio 사용 - 모델: {settings.lm_studio_model}, URL: {settings.lm_studio_base_url}, 타임아웃: {settings.llm_timeout}초")
-else:
-    # OpenAI API 키는 .env 파일에서만 가져옴
-    if not settings.openai_api_key:
-        raise ValueError(
-            "❌ OpenAI API 키가 설정되지 않았습니다!\n"
-            "   .env 파일에 OPENAI_API_KEY=sk-... 를 추가해주세요.\n"
-            "   프로젝트 루트 디렉토리에 .env 파일이 있는지 확인하세요."
-        )
-    
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=settings.openai_api_key,  # .env 파일에서만 가져옴
-        timeout=60  # OpenAI는 빠르므로 60초
-    )
-    logger.info(f"✅ OpenAI API 사용 - .env 파일에서 API 키 로드: {settings.openai_api_key[:20]}... (길이: {len(settings.openai_api_key)} 문자)")
+# LLM 팩토리로 생성 (provider는 app/core/config.py 의 llm_provider 로 결정)
+llm = get_chat_llm(temperature=0.2)
+logger.info(f"answer_agent LLM provider: {provider_label()}")
 
 
 def _handle_error(error_msg: str, state: GraphState) -> None:
@@ -54,7 +30,7 @@ def _handle_error(error_msg: str, state: GraphState) -> None:
         logger.error(f"LM Studio 연결 오류 - 세션: {state.get('session_id', 'unknown')}, 오류: {error_msg}")
     elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
         state["ai_message"] = "죄송합니다. 응답 생성에 시간이 오래 걸려 타임아웃이 발생했습니다. 더 간단한 질문으로 다시 시도해주세요."
-        logger.warning(f"답변 생성 타임아웃 - 세션: {state.get('session_id', 'unknown')}, 타임아웃: {settings.llm_timeout}초")
+        logger.warning(f"답변 생성 타임아웃 - 세션: {state.get('session_id', 'unknown')}")
     else:
         state["ai_message"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
         logger.error(f"답변 생성 기타 오류 - 세션: {state.get('session_id', 'unknown')}, 오류: {error_msg}")
@@ -214,10 +190,11 @@ def answer_agent_node(state: GraphState) -> GraphState:
 ⚠️ 중요: 이 답변은 TTS(음성 합성)로 읽혀집니다. 다음 규칙을 반드시 지켜주세요:
 - 마크다운 기호 사용 금지: **, *, #, -, 번호(1. 2. 3.) 등의 기호 사용 금지
 - 구어체로 자연스럽게 답변
-- 간결하게 핵심만 전달 (3-4문장 이내)""")
+- 간결하게 핵심만 전달 (2문장 이내)
+- 불필요한 인사말이나 중복 안내는 생략하고, 질문에 대한 핵심 정보(방법·연락처·기간 등)를 담아 답변하세요""")
 
             human_message = HumanMessage(content=f"""참고 문서를 기반으로 고객 질문에 대한 답변을 생성해주세요.
-마크다운 기호 없이 자연스러운 구어체로 답변하세요.
+마크다운 기호 없이 자연스러운 구어체로, 핵심만 2문장 이내로 답변하세요.
 
 [참고 문서]
 {context}

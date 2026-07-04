@@ -223,3 +223,5 @@ fa06-fin-aicc/
 # Google Cloud 서비스 계정 키 (민감정보)
 # ========================================
 gen-lang-client-*.json
+# 로컬 실행 전용 (Python 3.14 webrtcvad 스텁 등) - 커밋 제외
+_local_stubs/
