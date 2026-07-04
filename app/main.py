@@ -90,21 +90,13 @@ async def startup_event():
         logger.error(f"데이터베이스 초기화 중 오류 발생: {str(e)}", exc_info=True)
         # DB 연결 실패해도 서버는 시작 (나중에 재시도 가능)
     
-    # LLM 설정 확인
-    if settings.use_lm_studio:
-        logger.info(f"LM Studio 사용 - 모델: {settings.lm_studio_model}, URL: {settings.lm_studio_base_url}")
-        logger.info("LM Studio가 실행 중인지 확인하세요: http://localhost:1234")
-    else:
-        # .env 파일에서만 API 키를 가져옴
-        if settings.openai_api_key:
-            logger.info(f"✅ OpenAI API 키 로드 완료 (길이: {len(settings.openai_api_key)} 문자)")
-            logger.info(f"   API 키 시작: {settings.openai_api_key[:20]}...")
-            logger.info(f"   .env 파일에서 로드됨")
-        else:
-            logger.error("❌ OpenAI API 키가 설정되지 않았습니다!")
-            logger.error("   .env 파일에 OPENAI_API_KEY=sk-... 를 추가해주세요.")
-            logger.error("   프로젝트 루트 디렉토리에 .env 파일이 있는지 확인하세요.")
-            logger.error("   환경 변수는 사용하지 않습니다. 반드시 .env 파일에 설정해야 합니다.")
+    # LLM 설정 확인 (키 값은 절대 로깅하지 않음)
+    from app.core.llm import provider_label, _is_local_provider
+    logger.info(f"✅ LLM provider: {provider_label()}")
+    if _is_local_provider():
+        logger.info("   로컬 LLM 서버가 실행 중인지 확인하세요 (예: Ollama → http://localhost:11434)")
+    elif not settings.openai_api_key:
+        logger.error("❌ OpenAI API 키가 설정되지 않았습니다! .env 에 OPENAI_API_KEY 를 추가하거나 LLM_PROVIDER=ollama 로 설정하세요.")
     
     # 벡터 DB 초기화 확인 (비동기, 타임아웃 30초)
     try:

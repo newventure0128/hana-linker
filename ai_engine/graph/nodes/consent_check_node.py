@@ -13,10 +13,10 @@
 from __future__ import annotations
 import logging
 import re
-import json
 from ai_engine.graph.state import GraphState
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
+from app.core.llm import invoke_structured
+from app.schemas.llm_outputs import ConsentResult
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +92,6 @@ def _classify_with_llm(user_message: str, session_id: str) -> dict:
         }
     """
     try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
         system_prompt = """당신은 카드사 고객센터 AI 상담사입니다.
 현재 고객에게 "상담사 연결을 원하시나요?"라고 질문한 상태입니다.
 
@@ -127,26 +125,22 @@ UNCLEAR 응답 예시:
 
         human_prompt = f"고객 메시지: \"{user_message}\""
 
-        response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ])
-
-        # JSON 파싱
-        response_text = response.content.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-
-        result = json.loads(response_text)
-        logger.info(f"LLM 분류 결과 - 세션: {session_id}, 분류: {result.get('classification')}")
-        return result
+        result: ConsentResult = invoke_structured(
+            ConsentResult,
+            [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+            temperature=0.0,
+        )
+        logger.info(f"LLM 분류 결과 - 세션: {session_id}, 분류: {result.classification}")
+        return {"classification": result.classification, "ai_message": result.ai_message}
 
     except Exception as e:
         logger.error(f"LLM 분류 실패 - 세션: {session_id}, 에러: {e}")
-        # 실패 시 기본값: 동의로 처리
-        return {"classification": "CONSENT", "ai_message": ""}
+        # 실패 시 기본값: UNCLEAR (재질문) — 'CONSENT'로 처리하면 LLM 오류 시
+        # 고객 동의 없이 정보 수집이 진행되는 위험이 있으므로 안전하게 재질문한다.
+        return {
+            "classification": "UNCLEAR",
+            "ai_message": "죄송합니다, 다시 한번 말씀해 주시겠어요? 상담사 연결을 원하시면 '네' 또는 '연결해 주세요'라고 말씀해 주세요.",
+        }
 
 
 MAX_OUT_OF_DOMAIN_COUNT = 3  # 도메인 외 질문 최대 허용 횟수

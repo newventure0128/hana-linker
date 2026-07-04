@@ -62,12 +62,26 @@ class Settings(BaseSettings):
     tts_timeout: int = 30  # TTS 요청 타임아웃 (초)
     
     # ========== LLM 설정 ==========
-    
-    # LM Studio 설정
+
+    # 통합 LLM provider 설정 (app/core/llm.py 팩토리에서 사용)
+    # provider: "openai" | "ollama" | "lm_studio" | "vllm"
+    #   - openai  : OpenAI API (openai_model, openai_api_key 사용)
+    #   - ollama  : 로컬 Ollama (llm_base_url=http://localhost:11434/v1)
+    #   - lm_studio/vllm: OpenAI 호환 엔드포인트 (llm_base_url 지정)
+    llm_provider: str = "openai"
+    llm_base_url: str = "http://localhost:11434/v1"  # Ollama 기본 엔드포인트
+    llm_model: str = "qwen3.5:9b"                    # 로컬 모델명
+    llm_api_key: str = "ollama"                      # 로컬은 더미 키 (인증 불필요)
+    # thinking 모델(qwen3.5 등)의 추론 토큰 제어: "none"이면 thinking 비활성화.
+    # Ollama OpenAI 호환 엔드포인트는 "think" 필드를 무시하므로 reasoning_effort로 제어해야 함.
+    llm_reasoning_effort: Optional[str] = None       # None이면 요청에 포함하지 않음
+    openai_model: str = "gpt-4o-mini"                # provider=openai 일 때 사용할 모델
+
+    # LM Studio 설정 (하위 호환 유지 - use_lm_studio=True면 아래 값 우선 사용)
     lm_studio_base_url: str = "http://localhost:1234/v1"
     lm_studio_model: str = "openai/gpt-oss-20b"
-    use_lm_studio: bool = False  # True면 LM Studio 사용, False면 OpenAI 사용
-    llm_timeout: int = 60  # LLM 호출 타임아웃 (초) - OpenAI는 빠르므로 60초로 설정
+    use_lm_studio: bool = False  # True면 LM Studio 사용 (하위 호환), 신규는 llm_provider 사용
+    llm_timeout: int = 60  # LLM 호출 타임아웃 (초)
 
     # ========== LangSmith 설정 (프롬프트 디버깅용) ==========
     # LangSmith는 LangChain과 자동으로 통합됩니다.

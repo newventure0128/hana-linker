@@ -86,6 +86,48 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def broadcast_handover_report(session_id: str) -> dict:
+    """HANDOVER 완료 시 상담원 리포트를 생성해 대시보드로 브로드캐스트(+캐시)한다.
+
+    전송 경로(REST /chat/message · 채팅 WS · 음성 WS)와 무관하게 재사용된다.
+    broadcast_to_consultants가 recent_reports에도 캐시하므로, 대시보드가 아직
+    접속 전이어도 이후 접속 시 리포트를 받는다.
+    """
+    from app.schemas.handover import HandoverRequest
+    from app.services.workflow_service import process_handover
+
+    handover_response = await process_handover(
+        HandoverRequest(session_id=session_id, trigger_reason="AUTO_DETECTED")
+    )
+
+    report_data = {
+        "type": "handover_report",
+        "session_id": session_id,
+        "data": {
+            "status": handover_response.status,
+            "customer_sentiment": handover_response.analysis_result.customer_sentiment.value,
+            "summary": handover_response.analysis_result.summary,
+            "extracted_keywords": handover_response.analysis_result.extracted_keywords,
+            "kms_recommendations": [
+                {
+                    "title": rec.title,
+                    "url": str(rec.url),
+                    "relevance_score": rec.relevance_score,
+                }
+                for rec in handover_response.analysis_result.kms_recommendations
+            ],
+        },
+    }
+
+    logger.info(
+        f"📦 상담원 리포트 브로드캐스트 - 세션: {session_id}, "
+        f"sentiment={report_data['data']['customer_sentiment']}, "
+        f"kms={len(report_data['data']['kms_recommendations'])}개"
+    )
+    await manager.broadcast_to_consultants(report_data)
+    return report_data
+
+
 @router.post("/message", response_model=ChatResponse)
 async def chat_message(request: ChatRequest):
     """
@@ -126,7 +168,15 @@ async def chat_message(request: ChatRequest):
             logger.warning(f"채팅 메시지 처리 완료 (에러 응답) - 세션: {request.session_id}, 응답: {response.ai_message[:100]}")
         else:
             logger.info(f"채팅 메시지 처리 완료 - 세션: {request.session_id}, intent: {response.intent}, action: {response.suggested_action}")
-        
+
+        # 상담원 이관이 확정된 시점(action=HANDOVER)에만, 세션당 1회 대시보드로 리포트 브로드캐스트.
+        # (handover_status="pending"은 수집 '시작' 때도 세팅되므로 게이트로 쓰면 조기 발화된다)
+        if response.suggested_action.value == "HANDOVER" and request.session_id not in manager.recent_reports:
+            try:
+                await broadcast_handover_report(request.session_id)
+            except Exception as e:
+                logger.error(f"상담원 리포트 브로드캐스트 실패 - 세션: {request.session_id}: {e}", exc_info=True)
+
         return response
         
     except HTTPException:
@@ -242,7 +292,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     
                     # 상담원 연결이 필요한 경우 자동으로 리포트 생성
                     # (정보 수집이 완료되었을 때만 HANDOVER 액션이 반환됨)
-                    if response.suggested_action.value == "HANDOVER":
+                    if response.suggested_action.value == "HANDOVER" and session_id not in manager.recent_reports:
                         logger.info(f"상담원 이관 감지 (정보 수집 완료) - 자동 리포트 생성 시작: {session_id}")
                         
                         # 리포트 생성 중 알림
@@ -252,52 +302,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         })
                         
                         try:
-                            # 상담원 이관 처리
-                            from app.schemas.handover import HandoverRequest
-                            from app.services.workflow_service import process_handover
-                            
-                            handover_request = HandoverRequest(
-                                session_id=session_id,
-                                trigger_reason="AUTO_DETECTED"
-                            )
-                            
-                            handover_response = await process_handover(handover_request)
-                            
-                            # 상담원 리포트 데이터 준비
-                            report_data = {
-                                "type": "handover_report",
-                                "session_id": session_id,
-                                "data": {
-                                    "status": handover_response.status,
-                                    "customer_sentiment": handover_response.analysis_result.customer_sentiment.value,
-                                    "summary": handover_response.analysis_result.summary,
-                                    "extracted_keywords": handover_response.analysis_result.extracted_keywords,
-                                    "kms_recommendations": [
-                                        {
-                                            "title": rec.title,
-                                            "url": str(rec.url),
-                                            "relevance_score": rec.relevance_score
-                                        }
-                                        for rec in handover_response.analysis_result.kms_recommendations
-                                    ]
-                                }
-                            }
-                            
-                            # 전송할 리포트 데이터 로깅
-                            logger.info(f"📦 전송할 리포트 데이터 - 세션: {session_id}")
-                            logger.info(f"  - status: {report_data['data']['status']}")
-                            logger.info(f"  - customer_sentiment: {report_data['data']['customer_sentiment']}")
-                            logger.info(f"  - summary: {report_data['data']['summary']}")
-                            logger.info(f"  - summary 길이: {len(report_data['data']['summary']) if report_data['data']['summary'] else 0} 자")
-                            logger.info(f"  - keywords: {report_data['data']['extracted_keywords']}")
-                            logger.info(f"  - kms_recommendations: {len(report_data['data']['kms_recommendations'])}개")
-                            
-                            # 해당 세션에 리포트 전송
+                            # 상담원 리포트 생성 + 대시보드 브로드캐스트 (공통 함수)
+                            report_data = await broadcast_handover_report(session_id)
+                            # 고객(현재 세션)에게도 리포트 전송
                             await manager.send_message(session_id, report_data)
-                            
-                            # 상담원 대시보드로 브로드캐스트
-                            await manager.broadcast_to_consultants(report_data)
-                            
                             logger.info(f"상담원 리포트 자동 생성 완료 - 세션: {session_id}")
                             
                         except Exception as handover_error:

@@ -43,6 +43,7 @@ function App() {
   const textInputRef = useRef<HTMLInputElement>(null);
   const isHandoverModeRef = useRef(false);  // 클로저 문제 해결용 ref
   const isHumanRequiredFlowRef = useRef(false);  // 클로저 문제 해결용 ref
+  const isWaitingForAgentRef = useRef(false);  // 클로저 문제 해결용 ref (상담사 수락 대기 중)
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastMessageIdRef = useRef<number>(0);  // 마지막 메시지 ID (폴링용)
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -125,6 +126,11 @@ function App() {
     isHumanRequiredFlowRef.current = isHumanRequiredFlow;
     console.log('[App] isHumanRequiredFlow 변경:', isHumanRequiredFlow);
   }, [isHumanRequiredFlow]);
+
+  // isWaitingForAgent가 변경될 때 ref도 업데이트 (클로저 문제 해결)
+  useEffect(() => {
+    isWaitingForAgentRef.current = isWaitingForAgent;
+  }, [isWaitingForAgent]);
 
   // 실시간 모드 전환 시 자동 녹음 시작 (문제 1, 3 해결)
   // 새 상담 시 disconnect 후 약간의 딜레이 필요
@@ -211,31 +217,32 @@ function App() {
       }
 
       // 리마인더 후 타이머 재시작 (고객이 계속 응답하지 않으면 다시 리마인더)
-      // 단, isHumanRequiredFlow가 여전히 true일 때만
-      if (isHumanRequiredFlowRef.current && !isHandoverModeRef.current) {
+      // 단, 동의 대기 단계(isHumanRequiredFlow=true, 아직 수집/대기 아님)에서만.
+      // 정보 수집 시작(isWaitingForAgent) 이후엔 "…원하시면 '네'" 문구가 맞지 않으므로 멈춘다.
+      if (isHumanRequiredFlowRef.current && !isHandoverModeRef.current && !isWaitingForAgentRef.current) {
         console.log('[App] 리마인더 후 타이머 재시작');
         startInactivityTimer();
       }
     }, INACTIVITY_REMINDER_MS);
   }, [clearInactivityTimer, playAudio]);
 
-  // 고객 활동 시 타이머 리셋 (HUMAN_REQUIRED 플로우 상태일 때만)
+  // 고객 활동 시 타이머 리셋 (동의 대기 단계에서만; 수집/수락대기 중엔 리마인더 안 함)
   const resetInactivityTimer = useCallback(() => {
-    if (isHumanRequiredFlow && !isHandoverMode) {
+    if (isHumanRequiredFlow && !isHandoverMode && !isWaitingForAgent) {
       lastActivityTimeRef.current = Date.now();
       startInactivityTimer();
     }
-  }, [isHumanRequiredFlow, isHandoverMode, startInactivityTimer]);
+  }, [isHumanRequiredFlow, isHandoverMode, isWaitingForAgent, startInactivityTimer]);
 
   // HUMAN_REQUIRED 플로우 상태 변경 시 리마인더 타이머 관리
   // 중요: TTS 재생 중에는 타이머를 시작하지 않음
   useEffect(() => {
-    if (isHumanRequiredFlow && !isHandoverMode && !isAnyTTSPlaying) {
-      // HUMAN_REQUIRED 플로우 진입 + TTS 재생 완료 → 리마인더 타이머 시작
-      console.log('[App] HUMAN_REQUIRED 플로우 + TTS 완료 - 비활성 리마인더 타이머 시작');
+    if (isHumanRequiredFlow && !isHandoverMode && !isWaitingForAgent && !isAnyTTSPlaying) {
+      // 동의 대기 단계 진입 + TTS 재생 완료 → 리마인더 타이머 시작
+      console.log('[App] 동의 대기 + TTS 완료 - 비활성 리마인더 타이머 시작');
       startInactivityTimer();
-    } else if (!isHumanRequiredFlow || isHandoverMode) {
-      // HUMAN_REQUIRED 플로우가 아님 → 타이머 정리
+    } else if (!isHumanRequiredFlow || isHandoverMode || isWaitingForAgent) {
+      // 동의 대기 단계가 아니거나(수집/수락대기/이관모드) → 타이머 정리
       clearInactivityTimer();
     }
     // isAnyTTSPlaying이 true일 때는 타이머를 시작하지 않고 대기
@@ -244,7 +251,7 @@ function App() {
     return () => {
       clearInactivityTimer();
     };
-  }, [isHumanRequiredFlow, isHandoverMode, isAnyTTSPlaying, startInactivityTimer, clearInactivityTimer]);
+  }, [isHumanRequiredFlow, isHandoverMode, isWaitingForAgent, isAnyTTSPlaying, startInactivityTimer, clearInactivityTimer]);
 
   // 상담원 메시지 폴링 (이관 모드일 때만)
   // 이미 처리한 메시지 ID를 추적하는 Set (중복 방지)

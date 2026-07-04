@@ -339,6 +339,21 @@ async def process_text_and_respond(
             }
         )
 
+        # ========== 상담원 이관 확정 시 대시보드로 리포트 브로드캐스트 ==========
+        # 기존엔 상담원 알림(리포트 생성+broadcast)이 chat WS 경로에만 있었으나,
+        # 실제 고객 프론트는 음성 WS를 쓰므로 여기에도 배선한다.
+        # 게이트는 action=HANDOVER(정보 수집 완료 확정)이며 세션당 1회만 발화한다.
+        _sa = chat_response.suggested_action
+        _sa_val = _sa.value if hasattr(_sa, "value") else str(_sa)
+        if _sa_val == "HANDOVER":
+            try:
+                from app.api.v1.chat import broadcast_handover_report, manager
+                if session_id not in manager.recent_reports:
+                    await broadcast_handover_report(session_id)
+                    logger.info(f"[WS] 상담원 리포트 브로드캐스트 완료 - 세션: {session_id}")
+            except Exception as e:
+                logger.error(f"[WS] 상담원 리포트 브로드캐스트 실패 - 세션: {session_id}: {e}", exc_info=True)
+
         # ========== TTS ==========
         logger.info(f"[WS] TTS 시작 - 세션: {session_id}")
 

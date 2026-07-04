@@ -19,11 +19,10 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ai_engine.graph.state import GraphState
 from ai_engine.graph.utils.slot_loader import get_slot_loader
-from app.core.config import settings
+from app.core.llm import get_chat_llm, provider_label
 
 logger = logging.getLogger(__name__)
 
@@ -118,31 +117,9 @@ def _is_unclear_response(message: str) -> bool:
     return False
 
 
-# LM Studio 또는 OpenAI 사용
-if settings.use_lm_studio:
-    llm = ChatOpenAI(
-        model=settings.lm_studio_model,
-        temperature=0.2,
-        base_url=settings.lm_studio_base_url,
-        api_key="lm-studio",
-        timeout=settings.llm_timeout
-    )
-    logger.info(f"LM Studio 사용 - 모델: {settings.lm_studio_model}, URL: {settings.lm_studio_base_url}, 타임아웃: {settings.llm_timeout}초")
-else:
-    if not settings.openai_api_key:
-        raise ValueError(
-            "❌ OpenAI API 키가 설정되지 않았습니다!\n"
-            "   .env 파일에 OPENAI_API_KEY=sk-... 를 추가해주세요.\n"
-            "   프로젝트 루트 디렉토리에 .env 파일이 있는지 확인하세요."
-        )
-
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        api_key=settings.openai_api_key,
-        timeout=60
-    )
-    logger.info(f"✅ OpenAI API 사용 - .env 파일에서 API 키 로드")
+# LLM 팩토리로 생성 (provider는 app/core/config.py 의 llm_provider 로 결정)
+llm = get_chat_llm(temperature=0.2)
+logger.info(f"waiting_agent LLM provider: {provider_label()}")
 
 
 def _format_conversation_history(conversation_history: List[Dict]) -> str:
@@ -222,6 +199,32 @@ def _extract_single_field(conversation_history: List[Dict], current_message: str
         return None
 
 
+def _extract_answer_for_slot(current_message: str, field_label: str) -> str | None:
+    """현재 질문 중인 슬롯에 대한 고객의 '직전 답변'에서 값을 추출한다.
+
+    _extract_single_field는 봇의 질문을 제외한 고객 히스토리만 보므로, "0433"이나
+    "2025년 12월 15일" 같은 맨값 답변이 무슨 항목인지 맥락을 못 잡아 '없음'으로 흘리기 쉽다.
+    이 함수는 "고객이 방금 이 항목을 묻는 질문에 답했다"는 프레이밍으로 현재 메시지에서
+    값을 직접 뽑는다. 답변이 항목과 무관하면 None을 반환한다.
+    """
+    system_message = SystemMessage(content=(
+        f"고객이 '{field_label}'을(를) 묻는 질문을 받고 답했습니다. "
+        f"고객 답변에서 '{field_label}'에 해당하는 값만 정확히 뽑아 그대로 출력하세요. "
+        f"설명·문장 없이 값만. 답변이 '{field_label}'과(와) 전혀 무관하면 '없음'이라고만 답하세요."
+    ))
+    human_message = HumanMessage(
+        content=f"질문 항목: {field_label}\n고객 답변: \"{current_message}\"\n\n'{field_label}' 값:"
+    )
+    try:
+        val = llm.invoke([system_message, human_message]).content.strip()
+        if not val or val.lower() in ["없음", "null", "none", "n/a", "-"]:
+            return None
+        return val
+    except Exception as e:
+        logger.error(f"슬롯 답변 추출 오류: {str(e)}")
+        return None
+
+
 def _extract_info_from_conversation(
     conversation_history: List[Dict],
     current_message: str,
@@ -243,6 +246,11 @@ def _extract_info_from_conversation(
     for slot_name in required_slots:
         # 이미 값이 있으면 건너뜀
         if updated_info.get(slot_name):
+            continue
+        # inquiry_detail(자유서술 문의내용)은 자동 추출하지 않는다.
+        # 핸드오버 트리거 문장("상담원 연결")에서 잘못 추출돼 즉시 완료되는 것을 막고,
+        # 고객이 질문에 실제로 답한 내용을 노드에서 직접 캡처한다. (direction b)
+        if slot_name == "inquiry_detail":
             continue
 
         # 슬롯 라벨 가져오기
@@ -553,15 +561,17 @@ def waiting_agent_node(state: GraphState) -> GraphState:
         collected_info["_domain_name"] = domain_name
         collected_info["_category"] = category
 
-        # 기존 호환성을 위해 inquiry_type, inquiry_detail도 설정
-        if not collected_info.get("inquiry_type"):
-            collected_info["inquiry_type"] = domain_name
-        if not collected_info.get("inquiry_detail"):
-            collected_info["inquiry_detail"] = category
-
-        # 2. 필수 슬롯 결정
+        # 2. 필수 슬롯 결정 (호환성 필드 세팅 전에 계산해야 함)
         required_slots, optional_slots = slot_loader.get_slots_for_category(category)
         logger.info(f"필수 슬롯: {required_slots}, 선택 슬롯: {optional_slots}")
+
+        # 기존 호환성을 위해 inquiry_type, inquiry_detail도 설정
+        # 단, inquiry_detail이 '수집해야 할 필수 슬롯'인 경우(예: '기타 문의')에는
+        # 카테고리명으로 자동 채우지 않는다 → 고객에게 실제로 질문해서 받는다. (direction b)
+        if not collected_info.get("inquiry_type"):
+            collected_info["inquiry_type"] = domain_name
+        if not collected_info.get("inquiry_detail") and "inquiry_detail" not in required_slots:
+            collected_info["inquiry_detail"] = category
 
         # 2-1. "모르겠어요" 패턴 감지 시 현재 질문 중인 슬롯에 "미확인" 저장
         current_asking_slot = collected_info.get("_current_asking_slot")
@@ -569,6 +579,28 @@ def waiting_agent_node(state: GraphState) -> GraphState:
             # 해당 슬롯에 "미확인" 값 저장 → 다음 슬롯으로 진행
             collected_info[current_asking_slot] = "미확인"
             logger.info(f"'모르겠어요' 패턴 감지 - 슬롯 '{current_asking_slot}'에 '미확인' 저장")
+
+        # 2-2. 현재 질문 중인 슬롯에 대한 답변을 '현재 메시지'에서 직접 캡처한다.
+        #      히스토리 기반 자동추출(_extract_single_field)은 봇 질문을 제외해 맥락이 없어
+        #      "0433"·날짜 같은 맨값을 '없음'으로 흘리기 쉽다 → 같은 질문을 반복하게 됨.
+        #      질문받은 슬롯은 현재 메시지를 그 답변으로 보고 focused 추출/캡처한다.
+        if (
+            current_asking_slot
+            and not collected_info.get(current_asking_slot)
+            and not _check_unknown_response(user_message)
+            and user_message and len(user_message.strip()) >= 1
+        ):
+            if current_asking_slot == "inquiry_detail":
+                captured = user_message.strip()  # 자유서술 문의내용은 그대로
+            else:
+                captured = _extract_answer_for_slot(
+                    user_message, slot_loader.get_slot_label(current_asking_slot)
+                )
+            if captured:
+                collected_info[current_asking_slot] = captured
+                logger.info(
+                    f"질문 슬롯 '{current_asking_slot}' 답변 직접 캡처 - 세션: {session_id}, 값: {captured}"
+                )
 
         # 3. 대화 히스토리에서 정보 추출
         collected_info = _extract_info_from_conversation(
@@ -628,16 +660,19 @@ def waiting_agent_node(state: GraphState) -> GraphState:
                 state["handover_status"] = "pending"
                 logger.info(f"핸드오버 대기 시작 - 세션: {session_id}, handover_status: pending, 질문 슬롯: {next_asking_slot}")
             else:
-                # 두 번째 이후 - 문맥 기반 응답 생성 (도메인 외 질문 처리 포함)
+                # 직전에 물어본 슬롯이 방금 채워졌으면(정상 답변) → 다음 슬롯 질문만 간단히 잇는다.
+                # (LLM 문맥해석을 태우면 "보안상 말할 수 없다"류 엉뚱한 응답이 나오기 쉬움)
+                # 채워지지 않았으면(무관/오답) → 문맥 기반 LLM 응답으로 정중히 안내한다.
+                prev_slot_filled = bool(current_asking_slot and collected_info.get(current_asking_slot))
                 question = _generate_collection_question(
                     missing_slots,
                     collected_info,
                     slot_loader,
                     user_message=user_message,
                     current_category=category,
-                    is_first_entry=False  # LLM 기반 문맥 응답
+                    is_first_entry=prev_slot_filled,  # 정상 진행이면 단순 다음 질문
                 )
-                state["ai_message"] = question
+                state["ai_message"] = f"감사합니다. {question}" if prev_slot_filled else question
 
             logger.info(f"정보 수집 질문 생성 - 세션: {session_id}, 부족한 슬롯: {missing_slots}, 현재 질문 슬롯: {next_asking_slot}")
 
